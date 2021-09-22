@@ -35,9 +35,13 @@ limitations under the License.
 #include "bitmap_helpers.h"
 #include "get_top_n.h"
 
-#include "stopwatch_image.h"
-#include "mobilenet_v1_0.25_128_quant_model.h"
+#include "apple_banana_orange_480x268.h"
+#include "stopwatch_224x272.h"
+#include "ssd_mobilenet_v1_1_metadata_1.h"
 #include "labels.h"
+
+#define CURRENT_IMAGE     apple_banana_orange_480x268_bmp
+#define CURRENT_IMAGE_LEN apple_banana_orange_480x268_bmp_len
 
 /* Initialize the LCD_DISP. */
 void BOARD_InitLcd(void)
@@ -124,6 +128,35 @@ void BOARD_InitGPT(void)
 namespace tflite {
 namespace label_image {
 
+template<typename T>
+T* TensorData(TfLiteTensor* tensor, int batch_index);
+
+template<>
+float* TensorData(TfLiteTensor* tensor, int batch_index) {
+    int nelems = 1;
+    for (int i = 1; i < tensor->dims->size; i++) nelems *= tensor->dims->data[i];
+    switch (tensor->type) {
+        case kTfLiteFloat32:
+            return tensor->data.f + nelems * batch_index;
+        default:
+            LOG(FATAL) << "Should not reach here!\r\n";
+    }
+    return nullptr;
+}
+
+template<>
+uint8_t* TensorData(TfLiteTensor* tensor, int batch_index) {
+    int nelems = 1;
+    for (int i = 1; i < tensor->dims->size; i++) nelems *= tensor->dims->data[i];
+    switch (tensor->type) {
+        case kTfLiteUInt8:
+            return tensor->data.uint8 + nelems * batch_index;
+        default:
+            LOG(FATAL) << "Should not reach here!";
+    }
+    return nullptr;
+}
+
 /* Loads a list of labels, one per line, and returns a vector of the strings.
    It pads with empty strings so the length of the result is a multiple of 16,
    because the model expects that. */
@@ -147,7 +180,7 @@ TfLiteStatus ReadLabels(const string& labels,
 void RunInference(Settings* s) {
   std::unique_ptr<tflite::FlatBufferModel> model;
   std::unique_ptr<tflite::Interpreter> interpreter;
-  model = tflite::FlatBufferModel::BuildFromBuffer(mobilenet_model, mobilenet_model_len);
+  model = tflite::FlatBufferModel::BuildFromBuffer(ssd_mobilenet_v1_1_metadata_1_tflite, ssd_mobilenet_v1_1_metadata_1_tflite_len);
   if (!model) {
     LOG(FATAL) << "Failed to load model\r\n";
     return;
@@ -182,7 +215,7 @@ void RunInference(Settings* s) {
   int image_width = 128;
   int image_height = 128;
   int image_channels = 3;
-  uint8_t* in = read_bmp(stopwatch_bmp, stopwatch_bmp_len, &image_width, &image_height,
+  uint8_t* in = read_bmp(CURRENT_IMAGE, CURRENT_IMAGE_LEN, &image_width, &image_height,
                          &image_channels, s);
   
   int input = interpreter->inputs()[0];
@@ -236,29 +269,12 @@ void RunInference(Settings* s) {
   auto end_time = GetTimeInUS();
   LOG(INFO) << "Average time: " << (end_time - start_time) / 1000 << " ms\r\n";
 
-  const float threshold = 0.001f;
+  const float threshold = 0.48f;
 
-  std::vector<std::pair<float, int>> top_results;
-
-  int output = interpreter->outputs()[0];
-  TfLiteIntArray* output_dims = interpreter->tensor(output)->dims;
-  /* Assume output dims to be something like (1, 1, ... , size) */
-  auto output_size = output_dims->data[output_dims->size - 1];
-  switch (interpreter->tensor(output)->type) {
-    case kTfLiteFloat32:
-      get_top_n<float>(interpreter->typed_output_tensor<float>(0), output_size,
-                       s->number_of_results, threshold, &top_results, true);
-      break;
-    case kTfLiteUInt8:
-      get_top_n<uint8_t>(interpreter->typed_output_tensor<uint8_t>(0),
-                         output_size, s->number_of_results, threshold,
-                         &top_results, false);
-      break;
-    default:
-      LOG(FATAL) << "cannot handle output type "
-                 << interpreter->tensor(input)->type << " yet";
-      return;
-  }
+  TfLiteTensor* output_locations_ = interpreter->tensor(interpreter->outputs()[0]);
+  TfLiteTensor* output_classes_ = interpreter->tensor(interpreter->outputs()[1]);
+  TfLiteTensor* output_scores_ = interpreter->tensor(interpreter->outputs()[2]);
+  TfLiteTensor* num_detections_ = interpreter->tensor(interpreter->outputs()[3]);
 
   std::vector<string> labels;
   size_t label_count;
@@ -266,14 +282,49 @@ void RunInference(Settings* s) {
   if (ReadLabels(labels_txt, &labels, &label_count) != kTfLiteOk)
     return;
 
-  LOG(INFO) << "Detected:\r\n";
-  for (const auto& result : top_results) {
-    const float confidence = result.first;
-    const int index = result.second;
-    LOG(INFO) << "  " << labels[index] << " (" << (int)(confidence * 100) << "% confidence)\r\n";
-  }
-}
+  const float* detection_locations = TensorData<float>(output_locations_, 0);
+  const float* detection_classes = TensorData<float>(output_classes_, 0);
+  const float* detection_scores = TensorData<float>(output_scores_, 0);
+  const int num_detections = *TensorData<float>(num_detections_, 0);
 
+  GUI_SetBkColor(GUI_WHITE);
+  GUI_BMP_Draw(CURRENT_IMAGE, 0, 0);
+  GUI_SetBkColor(GUI_GRAY_D0); // to make light grey background for printing classes/class indexes
+  GUI_SetPenSize(2);
+
+  for (int i = 0; i < num_detections; i++){
+	  const std::string cls = labels[detection_classes[i]];
+	  const float score = detection_scores[i];
+
+	  const int ymin = detection_locations[4 * i] * image_height;
+	  const int xmin = detection_locations[4 * i + 1] * image_width;
+	  const int ymax = detection_locations[4 * i + 2] * image_height;
+	  const int xmax = detection_locations[4 * i + 3] * image_width;
+
+	  int n = cls.length();
+	  char class_name[n+1];
+	  strcpy(class_name, cls.c_str()); // convert string to char to display it on LCD
+
+	  char print_buf_score[10];
+
+	  if(score > threshold) {
+		  LOG(INFO) << "Detected " << cls << " with score " << (int)(score*100) << " [" << xmin << "," << ymin << ":" << xmax << "," << ymax << "]\r\n";
+
+		  if(i==0){
+			  GUI_SetColor(GUI_BLUE);
+		  }
+		  else{
+			  GUI_SetColor(GUI_MAKE_COLOR(0x00FF0000/(i*256))); // print different colors for different classes
+		  }
+
+		  sprintf(print_buf_score, "%2d%%", (int)(score*100));
+		  GUI_DrawRect(xmin, ymin, xmax, ymax); // print bounding boxes
+		  GUI_DispStringAt(class_name, xmin+5, ymin+5); // print recognized classes
+		  GUI_DispStringAt(print_buf_score, xmin+5, ymin+20); // print scores (confidence levels)
+	  }
+  }
+
+}  /* RunInference */
 }  /* namespace label_image */
 }  /* namespace tflite */
 
@@ -296,11 +347,19 @@ InitTimer();
 
 GUI_Init();
 
-std::cout << "Label image example using a TensorFlow Lite model\r\n";
+std::cout << "Object detection example using a TensorFlow Lite model\r\n";
 
-GUI_DispStringAt("emWin TEST!", 0, 0);
+GUI_SetBkColor(GUI_WHITE);
+GUI_Clear();
+GUI_SetBkColor(GUI_GREEN);
+GUI_SetColor(GUI_WHITE);
+GUI_SetFont(GUI_FONT_16_ASCII);
+GUI_BMP_Draw(CURRENT_IMAGE, 0, 0);
+GUI_DispStringAt("Image to process" , 0, 0);
 
 tflite::label_image::RunInference(&s);
+
+std::cout << "@@@ ! END ! @@@.\r\n";
 
 std::flush(std::cout);
 
