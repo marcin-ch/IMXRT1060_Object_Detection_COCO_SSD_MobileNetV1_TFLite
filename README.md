@@ -149,3 +149,19 @@ There is another image provided in the example, named `stopwatch_224x272.bmp` (a
 #define CURRENT_IMAGE     stopwatch_224x272_bmp
 #define CURRENT_IMAGE_LEN stopwatch_224x272_bmp_len
 ```
+
+## How to use this repo (source code)
+1. Clone the repo or download as `*.zip` to your local disc drive
+    * when clonning please use below command:
+    ```console
+    git clone https://github.com/marcin-ch/IMXRT1060_Object_Detection_COCO_SSD_MobileNetV1_TFLite.git
+    ```
+2. Open MCUXpresso, you will be asked for choosing existing or creating new workspace, I recommend creating new workspace for testing purposes
+3. From `QuickStart Panel` choose `Import project(s) from file system` and then select either unpacked repo (in case you clonned the repo) or zipped repo (in case you downloaded the archive)
+4. Make sure `Copy projects into workspace` in `Options` is checked
+5. Hit `Finish`
+6. Select imported project in `Project Explorer` and hit `Debug` in `QuickStart Panel`, the application should be up and running
+7. You can now remove clonned or downloaded repo, as it now exists in your workspace
+
+## How to use this repo (binary file)
+If you just want to check how the project looks like running on the board, you can flash binary file available in `evkmimxrt1060_OD_TFLite/doc/evkmimxrt1060_OD_TFLite.bin`. As i.MXRT1060 evaluation kit enumerates as MSD (Mass Storage Device) when connected to PC through USB cable, you can simply drag-n-drop binary file to your board. Wait few moments when flashing is in progress, reset the board and you should see application working.
